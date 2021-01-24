@@ -55,7 +55,7 @@
       "@oclif/plugin-help"
     ]
   },
-  "repository": "sfdx-plugins/notMeta",
+  "repository": "anandbn/notmeta",
   "scripts": {
     "lint": "tslint --project . --config tslint.json --format stylish",
     "postpack": "rm -f oclif.manifest.json",
