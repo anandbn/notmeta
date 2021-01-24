@@ -1,0 +1,7 @@
+{
+    "commandDescription": "Load state and country picklists from CSV",
+    "countrycsv":"CSV file location that contains list of countries load",
+    "statecsv":"CSV file location that contains list of states to load.",
+    "screenshots":"A toggle to take screenshots during the load process. Useful for debugging."
+  }
+  
