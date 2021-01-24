@@ -2,7 +2,7 @@
   "name": "notMeta",
   "description": "A collection of plugins that support tasks that aren't exposed via the metadata API",
   "version": "0.0.1",
-  "bugs": "https://github.com/sfdx-plugins/notMeta/issues",
+  "bugs": "https://github.com/anandbn/notmeta/issues",
   "dependencies": {
     "@oclif/command": "^1",
     "@oclif/config": "^1",
@@ -38,7 +38,7 @@
     "/npm-shrinkwrap.json",
     "/oclif.manifest.json"
   ],
-  "homepage": "https://github.com/sfdx-plugins/notMeta",
+  "homepage": "https://github.com/anandbn/notmeta",
   "keywords": [
     "sfdx-plugin"
   ],
