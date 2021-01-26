@@ -1,0 +1,5 @@
+{
+    "commandDescription": "Do a quick test of the state_country loading.",
+    "screenshots":"A toggle to take screenshots during the load process. Useful for debugging."
+  }
+  
