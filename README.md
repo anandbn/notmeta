@@ -28,14 +28,14 @@ node node_modules/puppeteer/install.js
 Once installation is complete, it's best to check if the plugin is able to navigate via Chromium. run the following command to check:
 
 ```
-sfdx state_country:validate -u <your org's username>
+sfdx state_country:validate -u <your org's username> -c <your country csv file> -s <your states csv file>
 ```
 
 __Note__: Sometimes this step might faile with a `timeout` error. If that occurs, please remove your org using `sfdx auth:logout` and do `sfdx auth:web:login` again and try the validation step.
 
 ### Loading Countries and States
 
-Check the `test_countries.csv` and `test_states.csv` files for a sample of how you need to structure your CSV files. __The Country ISO Code in both files need to match in order for the load to be successful__.
+Check the `test/data/state_country/test_countries.csv` and `test/data/state_country/test_states.csv` files for a sample of how you need to structure your CSV files. __The Country ISO Code in both files need to match in order for the load to be successful__.
 
 To load the pikclists run the following:
 
