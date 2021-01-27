@@ -1,8 +1,8 @@
-import {  SfdxCommand } from '@salesforce/command';
+import { flags, SfdxCommand } from '@salesforce/command';
 import { Messages} from '@salesforce/core';
 import { AnyJson } from '@salesforce/ts-types';
+import SalesforceSetup from '../../utils/SalesforceSetup';
 
-const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const stdFs = require('fs');
 const parse = require('csv-parse/lib/sync')
@@ -20,12 +20,14 @@ export default class Validate extends SfdxCommand {
     public static description = messages.getMessage('commandDescription');
 
     public static examples = [
-        `$ sfdx state_country:validate --targetusername myOrg@example.com`
+        `$ sfdx state_country:validate --targetusername myOrg@example.com --countryCsv ./test_countries.csv --stateCsv ./test_states.csv`
     ];
 
     public static args = [];
 
     protected static flagsConfig = {
+        countrycsv: flags.string({ char: 'c', description: messages.getMessage('countrycsv'), required: true }),
+        statecsv: flags.string({ char: 's', description: messages.getMessage('statecsv'), required: true }),
     };
 
     // Comment this out if your command does not require an org username
@@ -48,55 +50,100 @@ export default class Validate extends SfdxCommand {
                 stdFs.unlinkSync(`./tmp/${fileName}`);
             });
         }
-        const conn = this.org.getConnection();
+        let countriesAndStates = [];
         try {
             this.takeScreenshots=true;
             this.ux.startSpinner('Country and State picklist validation');
-            let browser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-            let page = await browser.newPage();
-            const setupHome = '/lightning/setup/SetupOneHome/home';
-            let urlToGo = `${conn.instanceUrl}/secur/frontdoor.jsp?sid=${conn.accessToken}&retURL=${encodeURIComponent(setupHome)}`;
-            await page.goto(urlToGo);
-            await page.waitForNavigation();
-            await page.waitForTimeout(10 * 1000);
-            await this.logMessage(`Navigating to Setup page`, page, `./tmp/setuphome.png`);
+            countriesAndStates = await this.loadCountries(this.flags.countrycsv);
+            countriesAndStates = await this.loadStatesAndMapToCountry(countriesAndStates, this.flags.statecsv);
 
-            await page.setViewport({ width: 1200, height: 1200 });
-            await page.waitForTimeout(5 * 1000);
-
-            const quickFind = await page.$("input[class='filter-box input'][type='search']");
-            await quickFind.focus();
-
-            await quickFind.type("State");
-            await page.waitForTimeout(10 * 1000);
-            await this.logMessage( `Looking for State/Country picklist setup`, page, `./tmp/state_search.png`);
-
-            const statePicklistLink = await page.$("a[href='/one/one.app#/setup/AddressCleanerOverview/home']");
-            statePicklistLink.click();
-            await page.waitForTimeout(10 * 1000);
-            await this.logMessage( `Navigating to State & Country picklist setup home`, page, `./tmp/state_country_home.png`);
-            let pageFrames = page.mainFrame().childFrames();
-            if (pageFrames.length == 1) {
-                const configLink = await this.findByLink(pageFrames[0], 'Configure states and countries.')
-                configLink.click();
-                await page.waitForTimeout(10 * 1000);
-                await this.logMessage( `State & Country picklist setup home`, page,  `./tmp/state_country_config_.png`);
+            let csvFileValid:boolean=true;
+            for(let i=0;i<countriesAndStates.length;i++){
+                if(!countriesAndStates[i].states || countriesAndStates[i].states.length == 0 ){
+                    csvFileValid=false;
+                    break;
+                }
             }
+            if(!csvFileValid){
+                this.ux.error(`Country Iso Code in State CSV File ${this.flags.statecsv} doesn't match with ${this.flags.countrycsv}`);
+                return { "status": "failed" };
+            }else{
+                this.ux.log('CSV Files validated.')
+                let setup:SalesforceSetup = new SalesforceSetup(this.ux,10);
+                let page = await setup.gotoSetup(this.org.getConnection());
+                await this.logMessage(`Navigating to Setup page`, page, `./tmp/1_setuphome.png`);
+    
+                
+                page = await setup.gotoSetupOption(page,'State','/one/one.app#/setup/AddressCleanerOverview/home',null);
+                await this.logMessage( `Navigating to State & Country picklist setup home`, page, `./tmp/2_state_country_home.png`);
+                let pageFrames = page.mainFrame().childFrames();
+                if (pageFrames.length == 1) {
+                    const enabledTxt = await pageFrames[0].$x('//span[contains(text(),"have already been enabled")]');
+                    if(enabledTxt && enabledTxt.length>0){
+                        this.ux.log('Country and State picklist has been enabled.')
+                        const configLink = await this.findByLink(pageFrames[0], 'Configure states and countries.')
+                        configLink.click();
+                        await page.waitForTimeout(10 * 1000);
+                        await this.logMessage( `State & Country picklist setup home`, page,  `./tmp/3_state_country_config_.png`);
+                        this.ux.stopSpinner('Completed validation of State/Country picklist loading.');
+                        await this.ux.confirm('Check screenshots in the /tmp directory. Were Setup and State/Counry setup screenshots created?')
+                        return { "status": "ok" };
+                    }else{
+                        this.ux.error('Country and State picklist has been not been enabled. Enable and re-run validation before loading')
+                        return { "status": "failed" };
+                    }
+                }
+                await setup.closeSession();
+            }
+            return { "status": "ok" };
 
-            this.ux.stopSpinner('Completed validation of State/Country picklist loading.');
-            browser.close();
-            await this.ux.confirm('Check screenshots in the /tmp directory. Were Setup and State/Counry setup screenshots created?')
+
         } catch (err) {
             console.log(err);
+            return { "status": "failed" };
         }
         // Return an object to be displayed with --json
         
-        return { "status": "ok" };
     }
 
+
+    private async loadCountries(countryCsvFile) {
+        const content = await fs.readFile(countryCsvFile);
+        // Create the parser
+        const records = parse(content, {
+            delimiter: ',',
+            columns: true
+        });
+        this.ux.log(`Total countries to load ${records.length}`);
+        return records;
+
+    }
+
+    private async loadStatesAndMapToCountry(countries, stateCsvFile) {
+
+        const content = await fs.readFile(stateCsvFile);
+        const records = parse(content, {
+            delimiter: ',',
+            columns: true
+        });
+        this.ux.log(`Total states to load ${records.length}`);
+
+        lodash.forEach(records, function (theState) {
+            let country = lodash.find(countries, function (cntry) {
+                return cntry.IsoCode == theState.CountryIso;
+            });
+
+
+            if (country) {
+                if (!country.states) {
+                    country.states = new Array();
+                }
+                country.states.push(theState);
+            }
+        });
+        return countries;
+
+    }
     
     
     // Normalizing the text

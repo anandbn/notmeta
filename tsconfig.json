@@ -3,7 +3,8 @@
   "compilerOptions": {
     "declaration": true,
     "outDir": "./lib",
-    "importHelpers": true
+    "importHelpers": true,
+    "lib":["DOM","ES6","DOM.Iterable","ScriptHost", "dom" ]
   },
   "include": [
     "./src/**/*"

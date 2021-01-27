@@ -1,8 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import { Messages} from '@salesforce/core';
 import { AnyJson } from '@salesforce/ts-types';
+import SalesforceSetup from '../../utils/SalesforceSetup';
+import { ElementHandle } from 'puppeteer';
 
-const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const stdFs = require('fs');
 const parse = require('csv-parse/lib/sync')
@@ -45,6 +46,8 @@ export default class Load extends SfdxCommand {
 
     private takeScreenshots;
 
+    private setup:SalesforceSetup;
+
     public async run(): Promise<AnyJson> {
         // this.org is guaranteed because requiresUsername=true, as opposed to supportsUsername
         this.ux.log(`Loading countries from : ${this.flags.countrycsv}`);
@@ -58,120 +61,116 @@ export default class Load extends SfdxCommand {
                 stdFs.unlinkSync(`./tmp/${fileName}`);
             });
         }
-        const conn = this.org.getConnection();
         let countriesAndStates = [];
         try {
             countriesAndStates = await this.loadCountries(this.flags.countrycsv);
             countriesAndStates = await this.loadStatesAndMapToCountry(countriesAndStates, this.flags.statecsv);
-            this.takeScreenshots=this.flags.screenshots;
-            this.ux.startSpinner('Country and State picklist load');
-            let browser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-            let page = await browser.newPage();
-            const setupHome = '/lightning/setup/SetupOneHome/home';
-            let urlToGo = `${conn.instanceUrl}/secur/frontdoor.jsp?sid=${conn.accessToken}&retURL=${encodeURIComponent(setupHome)}`;
-            await page.goto(urlToGo);
-            await page.waitForNavigation();
-            await page.waitForTimeout(10 * 1000);
-            await this.logMessage(`Navigating to Setup page`, page, `./tmp/setuphome.png`);
 
-            await page.setViewport({ width: 1200, height: 1200 });
-            await page.waitForTimeout(5 * 1000);
-
-            const quickFind = await page.$("input[class='filter-box input'][type='search']");
-            await quickFind.focus();
-
-            await quickFind.type("State");
-            await page.waitForTimeout(10 * 1000);
-            await this.logMessage( `Looking for State/Country picklist setup`, page, `./tmp/state_search.png`);
-
-            for (let j = 0; j < countriesAndStates.length; j++) {
-                const statePicklistLink = await page.$("a[href='/one/one.app#/setup/AddressCleanerOverview/home']");
-                statePicklistLink.click();
-                await page.waitForTimeout(10 * 1000);
-                await this.logMessage( `Navigating to State & Country picklist setup home`, page, `./tmp/state_country_home_${countriesAndStates[j].IsoCode}.png`);
-
-
-                let pageFrames = page.mainFrame().childFrames();
-                if (pageFrames.length == 1) {
-
-                    const configLink = await this.findByLink(pageFrames[0], 'Configure states and countries.')
-                    configLink.click();
-                    await page.waitForTimeout(10 * 1000);
-                    await this.logMessage( `State & Country picklist setup home`, page,  `./tmp/state_country_config_${countriesAndStates[j].IsoCode}.png`);
-
-                    pageFrames = page.mainFrame().childFrames();
-                    let countryIsoExists = await this.doesIsoCodeExist(pageFrames[0], countriesAndStates[j].IsoCode);
-                    if (!countryIsoExists) {
-                        const newCountryBtn = await pageFrames[0].$("input[type='submit'][value='New Country/Territory']");
-                        newCountryBtn.click();
-                        page.waitForNavigation();
-                        await page.waitForTimeout(10 * 1000);
-                        await this.logMessage( `Adding New Country`, page, `./tmp/state_country_new_country_${countriesAndStates[j].IsoCode}.png`);
-
-                        pageFrames = page.mainFrame().childFrames();
-                        await this.addCountry(page, pageFrames[0], countriesAndStates[j].Name,
-                            countriesAndStates[j].IsoCode, countriesAndStates[j].IntVal);
-                        pageFrames = page.mainFrame().childFrames();
-                        let successMsg = await pageFrames[0].$x('//h4[contains(text(),"Success")]');
-                        if (successMsg) {
-                            await this.logMessage( `Country:${countriesAndStates[j].Name}[Iso Code:${countriesAndStates[j].IsoCode}, IntVal:${countriesAndStates[j].IntVal}] successfully added !!!!`, page, null);
-                        } else {
-                            await this.logMessage( `Country:${countriesAndStates[j].Name}[Iso Code:${countriesAndStates[j].IsoCode}, IntVal:${countriesAndStates[j].IntVal}] failed !!!!`, page, null);
-
-                        }
-                        for (let i = 0; i < countriesAndStates[j].states.length; i++) {
-                            let stateToLoad = countriesAndStates[j].states[i];
-                            await this.addState(page, pageFrames[0], stateToLoad);
+            let csvFileValid:boolean=true;
+            for(let i=0;i<countriesAndStates.length;i++){
+                if(!countriesAndStates[i].states || countriesAndStates[i].states.length == 0 ){
+                    csvFileValid=false;
+                    break;
+                }
+            }
+            if(csvFileValid){
+                this.takeScreenshots=this.flags.screenshots;
+                this.setup = new SalesforceSetup(this.ux,10);
+    
+                this.ux.startSpinner('Country and State picklist load');
+                let page = await this.setup.gotoSetup( this.org.getConnection());
+    
+                await this.logMessage(`Navigating to Setup page`, page, `./tmp/setuphome.png`);
+    
+                for (let j = 0; j < countriesAndStates.length; j++) {
+                    page = await this.setup.stateCountryPicklistHome(page,null);
+                    await this.logMessage( `Navigating to State & Country picklist setup home`, page, `./tmp/state_country_home_${countriesAndStates[j].IsoCode}.png`);
+    
+    
+                    let pageFrames = page.mainFrame().childFrames();
+                    if (pageFrames.length == 1) {
+                        const enabledTxt = await pageFrames[0].$x('//span[contains(text(),"have already been enabled")]');
+                        if(enabledTxt && enabledTxt.length>0){
+                            const configLink = await this.setup.findByLink(pageFrames[0], 'Configure states and countries.')
+                            configLink.click();
+                            await page.waitForTimeout(10 * 1000);
+                            await this.logMessage( `State & Country picklist setup home`, page,  `./tmp/state_country_config_${countriesAndStates[j].IsoCode}.png`);
+        
                             pageFrames = page.mainFrame().childFrames();
-                            let successMsg = await pageFrames[0].$x('//h4[contains(text(),"Success")]');
-                            if (successMsg) {
-                                await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.IsoCode}, IntVal${stateToLoad.IntVal}] successfully added !!!!`, page,null);
-                            } else {
-                                await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.isoCode}, IntVal${stateToLoad.IntVal}] load failed !!!!`, page, null);
-                            }
-                        }
-                    } else {
-                        await this.logMessage( `Country: ${countriesAndStates[j].IsoCode} already exists. Adding states...`, page, null)
-                        let editCountryLink = await this.getEditLinkForIsoCode(pageFrames[0], countriesAndStates[j].IsoCode);
-                        await editCountryLink.click();
-                        await page.waitForNavigation();
-                        await page.waitForTimeout(5 * 1000);
-                        pageFrames = page.mainFrame().childFrames();
-                        await this.logMessage( `Navigating to ${countriesAndStates[j].IsoCode} setup page`, page, `./tmp/after_clicking_edit_existing_iso_${countriesAndStates[j].IsoCode}.png`);
-                        for (let i = 0; i < countriesAndStates[j].states.length; i++) {
-                            let stateToLoad = countriesAndStates[j].states[i];
-                            const stateExists = await this.doesIsoCodeExist(pageFrames[0], stateToLoad.IsoCode);
-                            if (!stateExists) {
-                                await this.addState(page, pageFrames[0], stateToLoad);
+                            let countryIsoExists = await this.doesIsoCodeExist(pageFrames[0], countriesAndStates[j].IsoCode);
+                            if (!countryIsoExists) {
+                                const newCountryBtn = await pageFrames[0].$("input[type='submit'][value='New Country/Territory']");
+                                newCountryBtn.click();
+                                page.waitForNavigation();
+                                await page.waitForTimeout(10 * 1000);
+                                await this.logMessage( `Adding New Country`, page, `./tmp/state_country_new_country_${countriesAndStates[j].IsoCode}.png`);
+        
+                                pageFrames = page.mainFrame().childFrames();
+                                await this.addCountry(page, pageFrames[0], countriesAndStates[j].Name,
+                                    countriesAndStates[j].IsoCode, countriesAndStates[j].IntVal);
                                 pageFrames = page.mainFrame().childFrames();
                                 let successMsg = await pageFrames[0].$x('//h4[contains(text(),"Success")]');
                                 if (successMsg) {
-                                    await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.IsoCode}, IntVal${stateToLoad.IntVal}] successfully added !!!!`, page, null);
+                                    await this.logMessage( `Country:${countriesAndStates[j].Name}[Iso Code:${countriesAndStates[j].IsoCode}, IntVal:${countriesAndStates[j].IntVal}] successfully added !!!!`, page, null);
                                 } else {
-                                    await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.isoCode}, IntVal${stateToLoad.IntVal}] load failed !!!!`, page, null);
+                                    await this.logMessage( `Country:${countriesAndStates[j].Name}[Iso Code:${countriesAndStates[j].IsoCode}, IntVal:${countriesAndStates[j].IntVal}] failed !!!!`, page, null);
+        
+                                }
+                                for (let i = 0; i < countriesAndStates[j].states.length; i++) {
+                                    let stateToLoad = countriesAndStates[j].states[i];
+                                    await this.addState(page, pageFrames[0], stateToLoad);
+                                    pageFrames = page.mainFrame().childFrames();
+                                    let successMsg = await pageFrames[0].$x('//h4[contains(text(),"Success")]');
+                                    if (successMsg) {
+                                        await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.IsoCode}, IntVal${stateToLoad.IntVal}] successfully added !!!!`, page,null);
+                                    } else {
+                                        await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.isoCode}, IntVal${stateToLoad.IntVal}] load failed !!!!`, page, null);
+                                    }
                                 }
                             } else {
-                                await this.logMessage( `State with IsoCode:${stateToLoad.IsoCode} already exists. Skipping.`, page,  null)
+                                await this.logMessage( `Country: ${countriesAndStates[j].IsoCode} already exists. Adding states...`, page, null)
+                                let editCountryLink = await this.getEditLinkForIsoCode(pageFrames[0], countriesAndStates[j].IsoCode);
+                                await editCountryLink.click();
+                                await page.waitForNavigation();
+                                await page.waitForTimeout(5 * 1000);
+                                pageFrames = page.mainFrame().childFrames();
+                                await this.logMessage( `Navigating to ${countriesAndStates[j].IsoCode} setup page`, page, `./tmp/after_clicking_edit_existing_iso_${countriesAndStates[j].IsoCode}.png`);
+                                for (let i = 0; i < countriesAndStates[j].states.length; i++) {
+                                    let stateToLoad = countriesAndStates[j].states[i];
+                                    const stateExists = await this.doesIsoCodeExist(pageFrames[0], stateToLoad.IsoCode);
+                                    if (!stateExists) {
+                                        await this.addState(page, pageFrames[0], stateToLoad);
+                                        pageFrames = page.mainFrame().childFrames();
+                                        let successMsg = await pageFrames[0].$x('//h4[contains(text(),"Success")]');
+                                        if (successMsg) {
+                                            await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.IsoCode}, IntVal${stateToLoad.IntVal}] successfully added !!!!`, page, null);
+                                        } else {
+                                            await this.logMessage( `State:${stateToLoad.Name}[Iso Code:${stateToLoad.isoCode}, IntVal${stateToLoad.IntVal}] load failed !!!!`, page, null);
+                                        }
+                                    } else {
+                                        await this.logMessage( `State with IsoCode:${stateToLoad.IsoCode} already exists. Skipping.`, page,  null)
+                                    }
+                                }
+        
                             }
+                            this.ux.stopSpinner('Loaded countries and states successfully.');
+                        }else{
+                            this.ux.error('Country and State picklist feature needs to be enabled before loading.');
                         }
-
                     }
-
                 }
+                await this.setup.closeSession();
+                return { "status": "ok" };
+    
+            }else{
+                this.ux.error(`Country Iso Code in State CSV File ${this.flags.statecsv} doesn't match with ${this.flags.countrycsv}`);
+                return { "status": "failed" };
             }
-
-            this.ux.stopSpinner('Loaded countries and states successfully.');
-
-            browser.close();
         } catch (err) {
             console.log(err);
         }
         // Return an object to be displayed with --json
         
-        return { "status": "ok" };
     }
 
     private async loadCountries(countryCsvFile) {
@@ -215,7 +214,7 @@ export default class Load extends SfdxCommand {
         const allTableCells = await page.$x('//*[contains(@class,"dataCell")]');
         let editLink = null;
         for (var i = 0; i < allTableCells.length; i++) {
-            const idVal = await this.getElementProperty(allTableCells[i], 'id');
+            const idVal = await this.setup.getElementProperty(allTableCells[i], 'id');
             if (idVal.includes('actionCol')) {
                 //This contains the anchor link for Edit
                 const children = await allTableCells[i].$$(':scope > *');
@@ -228,7 +227,7 @@ export default class Load extends SfdxCommand {
                 //This contains the anchor link for Edit
                 const children = await allTableCells[i].$$(':scope > *');
                 if (children) {
-                    let cellIsoCode = await this.getElementProperty(children[0], 'textContent');
+                    let cellIsoCode = await this.setup.getElementProperty(children[0], 'textContent');
                     if (cellIsoCode) {
                         if (isoCode === cellIsoCode) {
                             await this.logMessage( `Found existing ${isoCode}. Clicking Edit link.`, page, null)
@@ -255,7 +254,7 @@ export default class Load extends SfdxCommand {
             );
             const children = await isocodeCells[i].$$(':scope > *');
             if (children && tagName === "TD") {
-                let eleIsoCode = await this.getElementProperty(children[0], 'textContent');
+                let eleIsoCode = await this.setup.getElementProperty(children[0], 'textContent');
                 if (eleIsoCode) {
                     isoCodes.push(eleIsoCode);
                 }
@@ -265,32 +264,32 @@ export default class Load extends SfdxCommand {
         return isoCodes.includes(isoCode);
     }
     private async addCountry(parentPage, page, countryName, countryIso, countryIntVal) {
-        const country = await this.getInputById(page, 'editName');
+        const country = await this.setup.getInputById(page, 'editName');
         country.type(countryName);
         await page.waitForTimeout(3 * 1000);
-        const isoCode = await this.getInputById(page, 'editIsoCode');
+        const isoCode = await this.setup.getInputById(page, 'editIsoCode');
         isoCode.type(countryIso);
         await page.waitForTimeout(3 * 1000);
-        const intVal = await this.getInputById(page, 'editIntVal');
-        const intValId = await this.getElementProperty(intVal, 'id');
+        const intVal = await this.setup.getInputById(page, 'editIntVal');
+        const intValId = await this.setup.getElementProperty(intVal, 'id');
 
         //await intVal.setProperty('value','');
         await page.evaluate((selector) => {
-            const example = document.getElementById(selector);
-            example.value = '';
+            const intValTextBox:ElementHandle = document.getElementById(selector);
+            intValTextBox.value = '';
         }, intValId);
 
         await intVal.type(countryIntVal);
 
         await page.waitForTimeout(3 * 1000);
-        const isActive = await this.getInputById(page, 'editActive');
+        const isActive = await this.setup.getInputById(page, 'editActive');
         await isActive.click();
         await page.waitForTimeout(5 * 1000);
-        const isVisible = await this.getInputById(page, 'editVisible');
+        const isVisible = await this.setup.getInputById(page, 'editVisible');
         await isVisible.click();
         await this.logMessage( `Country values filled...`, parentPage, `./tmp/state_country_new_country_filled_${countryIso}.png`);
 
-        const addBtn = await this.getInputById(page, 'addButton');
+        const addBtn = await this.setup.getInputById(page, 'addButton');
         addBtn.click();
         await page.waitForNavigation();
         await page.waitForTimeout(5 * 1000);
@@ -302,7 +301,7 @@ export default class Load extends SfdxCommand {
             stateIso = stateToLoad.IsoCode,
             stateIntVal = stateToLoad.IntVal,
             countryIso = stateToLoad.CountryIso;
-        const addBtn = await this.getInputById(countryPage, 'buttonAddNew');
+        const addBtn = await this.setup.getInputById(countryPage, 'buttonAddNew');
         await addBtn.click();
         await countryPage.waitForNavigation();
         await countryPage.waitForTimeout(5 * 1000);
@@ -311,30 +310,30 @@ export default class Load extends SfdxCommand {
 
         let pageFrames = parentPage.mainFrame().childFrames();
         let page = pageFrames[0];
-        const stateNameInp = await this.getInputById(page, 'editName');
+        const stateNameInp = await this.setup.getInputById(page, 'editName');
         stateNameInp.type(stateName);
-        const stateIsoInp = await this.getInputById(page, 'editIsoCode');
+        const stateIsoInp = await this.setup.getInputById(page, 'editIsoCode');
         stateIsoInp.type(stateIso);
-        const stateIntValInp = await this.getInputById(page, 'editIntVal');
-        const intValId = await this.getElementProperty(stateIntValInp, 'id');
+        const stateIntValInp = await this.setup.getInputById(page, 'editIntVal');
+        const intValId = await this.setup.getElementProperty(stateIntValInp, 'id');
 
         //await intVal.setProperty('value','');
         await page.evaluate((selector) => {
-            const example = document.getElementById(selector);
-            example.value = '';
+            const intValTextBox:ElementHandle = document.getElementById(selector);
+            intValTextBox.value = '';
         }, intValId);
 
         await stateIntValInp.type(stateIntVal);
 
         await page.waitForTimeout(3 * 1000);
-        const isActive = await this.getInputById(page, 'editActive');
+        const isActive = await this.setup.getInputById(page, 'editActive');
         isActive.click();
         await page.waitForTimeout(5 * 1000);
-        const isVisible = await this.getInputById(page, 'editVisible');
+        const isVisible = await this.setup.getInputById(page, 'editVisible');
         isVisible.click();
         await this.logMessage('After filled new state values', parentPage, `./tmp/state_country_new_state_filled_${countryIso}_${stateIso}.png`)
 
-        const addStateBtn = await this.getInputById(page, 'addButton');
+        const addStateBtn = await this.setup.getInputById(page, 'addButton');
         addStateBtn.click();
         await page.waitForNavigation();
         await page.waitForTimeout(5 * 1000);
@@ -343,44 +342,6 @@ export default class Load extends SfdxCommand {
 
     }
 
-    private async getInputById(page, idValue) {
-        const inputFields = await page.$x("//input");
-        for (var i = 0; i < inputFields.length; i++) {
-            let inpId = await this.getElementProperty(inputFields[i], 'id');
-            if (inpId && inpId.includes(idValue)) {
-                return inputFields[i];
-            }
-        }
-        return null;
-    }
-    private async getElementProperty(element, property) {
-        let valueHandle = await element.getProperty(property);
-        let jsonVal = await valueHandle.jsonValue();
-        return this.getText(jsonVal);
-    }
-
-    // Normalizing the text
-    private getText(linkText) {
-        linkText = linkText.replace(/\r\n|\r/g, "\n");
-        linkText = linkText.replace(/\ +/g, " ");
-
-        // Replace &nbsp; with a space 
-        var nbspPattern = new RegExp(String.fromCharCode(160), "g");
-        return linkText.replace(nbspPattern, " ");
-    }
-
-    private async findByLink(page, linkString) {
-        const links = await page.$x('//a')
-        for (var i = 0; i < links.length; i++) {
-            let valueHandle = await links[i].getProperty('innerText');
-            let linkText = await valueHandle.jsonValue();
-            const text = this.getText(linkText);
-            if (linkString == text) {
-                return links[i];
-            }
-        }
-        return null;
-    }
 
     private async logMessage(msg, page, fileName) {
         this.ux.setSpinnerStatus(msg);

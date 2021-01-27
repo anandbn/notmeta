@@ -1,0 +1,8 @@
+{
+    "commandDescription": "Update Deliverability settings",
+    "bouncemgmt":"Flag to set Bounce management",
+    "returnbouncetosender":"Flag for setting Return bounce to sender option",
+    "enforceemailprivacy":"Flag for setting Enforce email privacy",
+    "screenshots":"Toggle to take screenshots whole executing the command"
+  }
+  

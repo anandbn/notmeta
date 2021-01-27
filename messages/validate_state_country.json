@@ -1,5 +1,7 @@
 {
     "commandDescription": "Do a quick test of the state_country loading.",
+    "countrycsv":"CSV file location that contains list of countries load",
+    "statecsv":"CSV file location that contains list of states to load.",
     "screenshots":"A toggle to take screenshots during the load process. Useful for debugging."
   }
   
